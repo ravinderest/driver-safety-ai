@@ -1,0 +1,6 @@
+streamlit>=1.40.0
+opencv-python
+openai
+streamlit-webrtc
+streamlit-autorefresh
+av
