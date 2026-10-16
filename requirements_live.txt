@@ -1,5 +1,5 @@
 streamlit>=1.40.0
-opencv-python
+opencv-python-headless
 openai
 streamlit-webrtc
 streamlit-autorefresh
