@@ -4,3 +4,4 @@ openai
 streamlit-webrtc
 streamlit-autorefresh
 av
+cv2
