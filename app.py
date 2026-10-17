@@ -55,7 +55,7 @@ FALLBACK_ADVICE = (
 # ============================================================
 
 def get_api_key():
-    """Read the API key from an environment variable or Streamlit secrets."""
+    """Read API key from environment variable or Streamlit secrets."""
     key = os.getenv("NEBIUS_API_KEY")
 
     if key:
@@ -75,22 +75,23 @@ def get_ai_advice(
     previous_advice=None,
     alert_number=None,
 ):
-    """Ask Nemotron for a fresh recommendation; return useful advice on failure."""
+    """Ask Nemotron for a recommendation, with a fallback if unavailable."""
 
     api_key = get_api_key()
 
+    fallback_messages = [
+        "Pull over at the next safe location, park, and take a rest before continuing.",
+        "Do not try to push through tiredness. Stop somewhere safe, hydrate, and rest.",
+        "When safe, park the vehicle and take a short nap or arrange another driver.",
+        "Avoid continuing if you feel sleepy. Find a safe stopping place and rest first.",
+        "Please pause the journey at a safe location, get some fresh air, and rest before driving again.",
+    ]
+
     if not api_key:
-        # Rotate practical fallback messages so every new alert can show a
-        # different recommendation even when the AI service is unavailable.
-        fallback_messages = [
-            "Pull over at the next safe location, park, and take a rest before continuing.",
-            "Do not try to push through tiredness. Stop somewhere safe, hydrate, and rest.",
-            "When safe, park the vehicle and take a short nap or arrange another driver.",
-            "Avoid continuing if you feel sleepy. Find a safe stopping place and rest first.",
-            "Please pause the journey at a safe location, get some fresh air, and rest before driving again.",
-        ]
         if alert_number is not None:
-            return fallback_messages[(int(alert_number) - 1) % len(fallback_messages)]
+            return fallback_messages[
+                (int(alert_number) - 1) % len(fallback_messages)
+            ]
         return FALLBACK_ADVICE
 
     try:
@@ -107,14 +108,13 @@ def get_ai_advice(
                 {
                     "role": "system",
                     "content": (
-                        "You are a driver safety assistant. Provide one "
-                        "short, practical recommendation in plain English. "
-                        "Do not diagnose medical conditions. If drowsiness "
-                        "is suspected, recommend stopping at a safe location "
-                        "and resting. Eye detection alone cannot prove that "
-                        "a driver is drowsy. Each alert must receive a fresh "
-                        "message with wording and a practical focus different "
-                        "from the previous recommendation when possible."
+                        "You are a driver safety assistant. Provide one short, "
+                        "practical recommendation in plain English. Do not diagnose "
+                        "medical conditions. If drowsiness is suspected, recommend "
+                        "stopping at a safe location and resting. Eye detection "
+                        "alone cannot prove that a driver is drowsy. Each alert "
+                        "should receive fresh wording and a different practical "
+                        "focus when possible."
                     ),
                 },
                 {
@@ -124,12 +124,10 @@ def get_ai_advice(
                         f"Possible alert episodes: {alerts}. "
                         f"Longest possible eye closure: {longest:.1f} seconds. "
                         f"Observed duration: {duration:.1f} seconds. "
-                        f"Alert number in this session: {alert_number if alert_number is not None else alerts}. "
+                        f"Alert number: {alert_number if alert_number is not None else alerts}. "
                         f"Previous recommendation: {previous_advice or 'None provided'}. "
-                        "Generate a new recommendation for this alert. Do not copy "
-                        "or paraphrase the previous recommendation; choose a distinct "
-                        "practical safety action while always prioritizing stopping "
-                        "in a safe place and resting if drowsiness is suspected."
+                        "Give a new, distinct, practical safety recommendation. "
+                        "If drowsiness is suspected, prioritize stopping safely and resting."
                     ),
                 },
             ],
@@ -143,17 +141,11 @@ def get_ai_advice(
             return advice.strip()
 
     except Exception:
-        # This helper may run in a background thread. Never call Streamlit UI
-        # functions here; return useful advice even when the API is unavailable.
         if alert_number is not None:
-            fallback_messages = [
-                "Pull over at the next safe location, park, and take a rest before continuing.",
-                "Do not try to push through tiredness. Stop somewhere safe, hydrate, and rest.",
-                "When safe, park the vehicle and take a short nap or arrange another driver.",
-                "Avoid continuing if you feel sleepy. Find a safe stopping place and rest first.",
-                "Please pause the journey at a safe location, get some fresh air, and rest before driving again.",
+            return fallback_messages[
+                (int(alert_number) - 1) % len(fallback_messages)
             ]
-            return fallback_messages[(int(alert_number) - 1) % len(fallback_messages)]
+
         return FALLBACK_ADVICE
 
     return FALLBACK_ADVICE
@@ -164,7 +156,7 @@ def get_ai_advice(
 # ============================================================
 
 def load_detectors():
-    """Load OpenCV's face and eye Haar Cascade classifiers."""
+    """Load OpenCV face and eye Haar Cascade classifiers."""
 
     face_path = (
         cv2.data.haarcascades
@@ -188,12 +180,7 @@ def load_detectors():
 
 
 def detect_frame(image, face_detector, eye_detector):
-    """
-    Draw detected faces and eyes.
-
-    If a face is detected but no eyes are detected, mark it as a
-    possible eye-closure event. This heuristic can produce false alerts.
-    """
+    """Detect faces and eyes; flag a possible eye-closure event."""
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
@@ -216,7 +203,6 @@ def detect_frame(image, face_detector, eye_detector):
             2,
         )
 
-        # Eyes are searched for in the upper part of the face.
         upper_height = max(1, int(height * 0.65))
         eye_region = gray[
             y:y + upper_height,
@@ -253,26 +239,18 @@ def detect_frame(image, face_detector, eye_detector):
 # ============================================================
 
 class LiveMetrics:
-    """
-    Shared live-video state.
-
-    The video callback runs in a different thread from Streamlit.
-    A lock protects the counters and alert state.
-    """
+    """Thread-safe metrics for webcam processing."""
 
     def __init__(self, alert_after=1.0):
         self.lock = threading.Lock()
-
         self.face_detector, self.eye_detector = load_detectors()
 
         self.alert_after = alert_after
         self.started = None
         self.last_frame_at = None
-
         self.frames = 0
         self.alerts = 0
         self.longest = 0.0
-
         self.closed_since = None
         self.alert_active = False
         self.face_seen = False
@@ -283,7 +261,6 @@ class LiveMetrics:
             self.alert_after = seconds
 
     def reset(self):
-        """Clear all metrics when a new webcam session starts."""
         with self.lock:
             self.started = None
             self.last_frame_at = None
@@ -296,8 +273,6 @@ class LiveMetrics:
             self.events = []
 
     def process_frame(self, frame):
-        """Process a webcam frame and return the annotated frame."""
-
         image = frame.to_ndarray(format="bgr24")
 
         image, face_count, possible_closure = detect_frame(
@@ -321,11 +296,7 @@ class LiveMetrics:
                     self.closed_since = now
 
                 closure_seconds = now - self.closed_since
-
-                self.longest = max(
-                    self.longest,
-                    closure_seconds,
-                )
+                self.longest = max(self.longest, closure_seconds)
 
                 if (
                     closure_seconds >= self.alert_after
@@ -333,18 +304,17 @@ class LiveMetrics:
                 ):
                     self.alerts += 1
                     self.alert_active = True
-                    self.events.append(
-                        {
-                            "Alert #": self.alerts,
-                            "Time in session (s)": round(
-                                now - self.started, 2
-                            ),
-                            "Possible eye closure (s)": round(
-                                closure_seconds, 2
-                            ),
-                            "Note": "Possible eye-closure event; not a diagnosis",
-                        }
-                    )
+
+                    self.events.append({
+                        "Alert #": self.alerts,
+                        "Time in session (s)": round(
+                            now - self.started, 2
+                        ),
+                        "Possible eye closure (s)": round(
+                            closure_seconds, 2
+                        ),
+                        "Note": "Possible eye-closure event; not a diagnosis",
+                    })
 
             else:
                 self.closed_since = None
@@ -380,8 +350,6 @@ class LiveMetrics:
         )
 
     def snapshot(self):
-        """Safely return the latest metrics for the Streamlit interface."""
-
         now = time.monotonic()
 
         with self.lock:
@@ -396,7 +364,6 @@ class LiveMetrics:
         duration = 0.0
 
         if started is not None and last_frame_at is not None:
-            # Freeze elapsed time when the webcam stops delivering frames.
             if now - last_frame_at <= 2.0:
                 duration = now - started
             else:
@@ -413,7 +380,7 @@ class LiveMetrics:
 
 
 class LiveAdviceManager:
-    """Generate advice in a background thread so UI refreshes cannot cancel it."""
+    """Generate webcam advice in a background thread."""
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -434,7 +401,6 @@ class LiveAdviceManager:
             self.worker = None
 
     def stop(self):
-        # Any in-flight result is ignored after STOP.
         with self.lock:
             self.active = False
 
@@ -442,11 +408,18 @@ class LiveAdviceManager:
         with self.lock:
             if not self.active:
                 return
-            self.requested_alerts = max(self.requested_alerts, int(alert_count))
+
+            self.requested_alerts = max(
+                self.requested_alerts,
+                int(alert_count),
+            )
+
             if self.worker is not None and self.worker.is_alive():
                 return
+
             if self.completed_alerts >= self.requested_alerts:
                 return
+
             self.generating = True
             self.worker = threading.Thread(
                 target=self._run,
@@ -461,9 +434,11 @@ class LiveAdviceManager:
                 if not self.active:
                     self.generating = False
                     return
+
                 if self.completed_alerts >= self.requested_alerts:
                     self.generating = False
                     return
+
                 alert_number = self.completed_alerts + 1
                 previous_advice = self.advice
 
@@ -477,11 +452,10 @@ class LiveAdviceManager:
             )
 
             with self.lock:
-                # Do not publish an answer if the user stopped the camera
-                # while the API request was in flight.
                 if not self.active:
                     self.generating = False
                     return
+
                 self.advice = advice
                 self.completed_alerts = alert_number
 
@@ -499,12 +473,7 @@ class LiveAdviceManager:
 # ============================================================
 
 def process_video(input_path, raw_output_path, alert_after, progress):
-    """
-    Process the complete video using OpenCV.
-
-    The intermediate file is encoded with MP4V. It is transcoded to H.264
-    later for better compatibility with the browser's video player.
-    """
+    """Process a video using OpenCV and annotate possible eye closures."""
 
     face_detector, eye_detector = load_detectors()
     capture = cv2.VideoCapture(str(input_path))
@@ -578,18 +547,16 @@ def process_video(input_path, raw_output_path, alert_after, progress):
                     alert_count += 1
                     alert_active = True
 
-                    events.append(
-                        {
-                            "Alert": alert_count,
-                            "Frame": frames_processed,
-                            "Video time (s)": round(
-                                frames_processed / fps, 2
-                            ),
-                            "Possible closure (s)": round(
-                                closure_seconds, 2
-                            ),
-                        }
-                    )
+                    events.append({
+                        "Alert": alert_count,
+                        "Frame": frames_processed,
+                        "Video time (s)": round(
+                            frames_processed / fps, 2
+                        ),
+                        "Possible closure (s)": round(
+                            closure_seconds, 2
+                        ),
+                    })
 
             else:
                 closed_frames = 0
@@ -608,7 +575,10 @@ def process_video(input_path, raw_output_path, alert_after, progress):
 
             cv2.putText(
                 frame,
-                f"Frame: {frames_processed} | Faces: {face_count} | Alerts: {alert_count}",
+                (
+                    f"Frame: {frames_processed} | "
+                    f"Faces: {face_count} | Alerts: {alert_count}"
+                ),
                 (15, height - 18),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
@@ -618,21 +588,7 @@ def process_video(input_path, raw_output_path, alert_after, progress):
 
             writer.write(frame)
 
-            # if total_frames > 0 and frames_processed % 5 == 0:
-            #     percent = min(
-            #         int(frames_processed * 100 / total_frames),
-            #         100,
-            #     )
-            #     progress.progress(
-            #         percent,
-            #         text=f"Processing video: {percent}%",
-            #     )
-
-            if (
-                progress is not None
-                and total_frames > 0
-                and frames_processed % 5 == 0
-                ):
+            if total_frames > 0 and frames_processed % 5 == 0:
                 percent = min(
                     int(frames_processed * 100 / total_frames),
                     100,
@@ -642,16 +598,14 @@ def process_video(input_path, raw_output_path, alert_after, progress):
                     text=f"Processing video: {percent}%",
                 )
 
-
         if frames_processed == 0:
             raise RuntimeError("No readable frames were found.")
 
-        if progress is not None:
-            progress.progress(
-                100,
-                text="Detection complete. Preparing playable video...",
-            )
-            
+        progress.progress(
+            100,
+            text="Detection complete. Preparing playable video...",
+        )
+
         return {
             "frames": frames_processed,
             "fps": fps,
@@ -673,12 +627,7 @@ def process_video(input_path, raw_output_path, alert_after, progress):
 # ============================================================
 
 def convert_to_browser_mp4(raw_path, final_path):
-    """
-    Convert the OpenCV intermediate video to H.264 MP4.
-
-    imageio-ffmpeg supplies an FFmpeg executable. The conversion fails
-    with a helpful error if no usable H.264 encoder is available.
-    """
+    """Convert the intermediate video to browser-compatible H.264 MP4."""
 
     try:
         import imageio_ffmpeg
@@ -689,17 +638,11 @@ def convert_to_browser_mp4(raw_path, final_path):
             "python -m pip install imageio-ffmpeg"
         ) from error
 
-    # Try common H.264 encoders. Some FFmpeg builds have only one.
     for encoder in ("libx264", "libopenh264"):
         if encoder == "libx264":
-            encoder_options = [
-                "-preset", "veryfast",
-                "-crf", "23",
-            ]
+            encoder_options = ["-preset", "veryfast", "-crf", "23"]
         else:
-            encoder_options = [
-                "-b:v", "2M",
-            ]
+            encoder_options = ["-b:v", "2M"]
 
         command = [
             ffmpeg_exe,
@@ -723,11 +666,10 @@ def convert_to_browser_mp4(raw_path, final_path):
                 timeout=900,
                 check=False,
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as error:
             raise RuntimeError(
-                "Video conversion took too long and timed out. "
-                "Try a shorter or smaller video."
-            )
+                "Video conversion timed out. Try a shorter or smaller video."
+            ) from error
 
         if (
             completed.returncode == 0
@@ -736,7 +678,6 @@ def convert_to_browser_mp4(raw_path, final_path):
         ):
             return
 
-        # Remove a partially written file before trying the next encoder.
         if final_path.exists():
             final_path.unlink()
 
@@ -744,37 +685,6 @@ def convert_to_browser_mp4(raw_path, final_path):
         "FFmpeg could not encode H.264. Install a full FFmpeg build "
         "with a libx264 or libopenh264 encoder, then try again."
     )
-    
-@st.cache_data(show_spinner=False, max_entries=2)
-def process_uploaded_video_cached(video_bytes, video_filename, alert_after):
-    """Cache the completed result for the same uploaded video and threshold."""
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_dir = Path(temp_dir)
-
-        suffix = Path(video_filename).suffix or ".mp4"
-        input_path = temp_dir / f"input{suffix}"
-        raw_output_path = temp_dir / "annotated_raw.mp4"
-        final_output_path = temp_dir / "processed_driver_video.mp4"
-
-        input_path.write_bytes(video_bytes)
-
-        # Process without a Streamlit progress widget inside the cached function.
-        result = process_video(
-            input_path,
-            raw_output_path,
-            alert_after,
-            progress=None,
-        )
-
-        convert_to_browser_mp4(raw_output_path, final_output_path)
-
-        processed_bytes = final_output_path.read_bytes()
-
-        if not processed_bytes:
-            raise RuntimeError("Processed video file is empty.")
-
-        return processed_bytes, result
 
 
 # ============================================================
@@ -866,7 +776,6 @@ if mode == "Live webcam":
         "Test while parked, never while driving."
     )
 
-    # Persist one metrics object across Streamlit reruns.
     if "live_metrics" not in st.session_state:
         st.session_state["live_metrics"] = LiveMetrics(
             alert_after=alert_after
@@ -875,8 +784,6 @@ if mode == "Live webcam":
     live_metrics = st.session_state["live_metrics"]
     live_metrics.set_alert_threshold(alert_after)
 
-    # STUN helps establish peer-to-peer connections.
-    # TURN can be configured for networks that block direct connections.
     ice_servers = [
         {"urls": ["stun:stun.l.google.com:19302"]}
     ]
@@ -887,17 +794,14 @@ if mode == "Live webcam":
         turn_password = st.secrets.get("TURN_PASSWORD")
 
         if turn_url and turn_username and turn_password:
-            ice_servers.append(
-                {
-                    "urls": [turn_url],
-                    "username": turn_username,
-                    "credential": turn_password,
-                }
-            )
+            ice_servers.append({
+                "urls": [turn_url],
+                "username": turn_username,
+                "credential": turn_password,
+            })
     except Exception:
         pass
 
-    # The function callback shares thread-safe metrics with the UI.
     webrtc_ctx = webrtc_streamer(
         key="driver-safety-live",
         mode=WebRtcMode.SENDRECV,
@@ -913,12 +817,14 @@ if mode == "Live webcam":
     )
 
     camera_is_playing = bool(webrtc_ctx.state.playing)
+    was_playing = st.session_state.get(
+        "live_camera_was_playing",
+        False,
+    )
 
-    # Preserve the finished session's table/advice after STOP. When START is
-    # pressed again, clear the previous session so the new session starts fresh.
-    was_playing = st.session_state.get("live_camera_was_playing", False)
     if "live_advice_manager" not in st.session_state:
         st.session_state["live_advice_manager"] = LiveAdviceManager()
+
     live_advice_manager = st.session_state["live_advice_manager"]
 
     if camera_is_playing and not was_playing:
@@ -926,6 +832,7 @@ if mode == "Live webcam":
         live_advice_manager = LiveAdviceManager()
         st.session_state["live_advice_manager"] = live_advice_manager
         st.session_state["live_notified_alert_count"] = 0
+
     elif not camera_is_playing and was_playing:
         live_advice_manager.stop()
 
@@ -950,16 +857,22 @@ if mode == "Live webcam":
 
     col1.metric("Frames processed", f"{live_snapshot['frames']:,}")
     col2.metric("Possible alert episodes", live_snapshot["alerts"])
-    col3.metric("Longest possible closure", f"{live_snapshot['longest']:.1f} s")
-    col4.metric("Observed session", f"{live_snapshot['duration']:.1f} s")
+    col3.metric(
+        "Longest possible closure",
+        f"{live_snapshot['longest']:.1f} s",
+    )
+    col4.metric(
+        "Observed session",
+        f"{live_snapshot['duration']:.1f} s",
+    )
 
-    # Track alert notifications separately from advice generation.
     if "live_notified_alert_count" not in st.session_state:
         st.session_state["live_notified_alert_count"] = 0
 
     new_alert = (
         camera_is_playing
-        and live_snapshot["alerts"] > st.session_state["live_notified_alert_count"]
+        and live_snapshot["alerts"]
+        > st.session_state["live_notified_alert_count"]
     )
 
     if live_snapshot["frames"] == 0:
@@ -973,15 +886,23 @@ if mode == "Live webcam":
             "stop at a safe place before resting. This is not a medical diagnosis."
         )
     else:
-        st.success("No prolonged possible eye-closure alerts detected yet.")
+        st.success(
+            "No prolonged possible eye-closure alerts detected yet."
+        )
 
     if new_alert:
-        st.session_state["live_notified_alert_count"] = live_snapshot["alerts"]
-        st.warning("🔔 DRIVER SAFETY ALERT — possible drowsiness/eye closure.")
-        st.audio(make_alert_beep(), format="audio/wav", autoplay=True)
+        st.session_state["live_notified_alert_count"] = (
+            live_snapshot["alerts"]
+        )
+        st.warning(
+            "🔔 DRIVER SAFETY ALERT — possible drowsiness/eye closure."
+        )
+        st.audio(
+            make_alert_beep(),
+            format="audio/wav",
+            autoplay=True,
+        )
 
-    # Request advice without blocking Streamlit's refresh loop. This avoids a
-    # one-second autorefresh interrupting a slower AI API response.
     if camera_is_playing and live_snapshot["alerts"] > 0:
         live_advice_manager.request(
             live_snapshot["alerts"],
@@ -990,18 +911,21 @@ if mode == "Live webcam":
         )
 
     advice_state = live_advice_manager.snapshot()
+
     if advice_state["generating"]:
         st.info(
             f"Alert advice is being prepared "
-            f"({advice_state['completed_alerts']}/{live_snapshot['alerts']} complete)…"
+            f"({advice_state['completed_alerts']}/"
+            f"{live_snapshot['alerts']} complete)…"
         )
+
     if advice_state["advice"]:
         st.subheader("AI Safety Advice")
         st.info(advice_state["advice"])
 
-    # Show the alert log after the webcam has stopped, as requested.
     if not camera_is_playing and live_snapshot["frames"] > 0:
         st.subheader("📋 Live Webcam Alert Log")
+
         if live_snapshot["events"]:
             st.dataframe(
                 live_snapshot["events"],
@@ -1009,7 +933,9 @@ if mode == "Live webcam":
                 hide_index=True,
             )
         else:
-            st.success("No possible eye-closure alert events were recorded.")
+            st.success(
+                "No possible eye-closure alert events were recorded."
+            )
 
     st.caption(
         "Audio autoplay depends on browser permissions/settings. Visual warnings "
@@ -1017,8 +943,9 @@ if mode == "Live webcam":
         "This demo is not a certified safety device."
     )
 
+
 # ============================================================
-# UPLOAD / RECORDED VIDEO
+# UPLOAD / RECORDED VIDEO — UPDATED PROCESSING FLOW
 # ============================================================
 
 else:
@@ -1029,38 +956,60 @@ else:
         key="driver-video-upload",
     )
 
-    # A video upload is required. Do not process anything when no file is selected.
-    video_bytes = uploaded_video.getvalue() if uploaded_video is not None else None
-    video_filename = uploaded_video.name if uploaded_video is not None else None
+    video_bytes = (
+        uploaded_video.getvalue()
+        if uploaded_video is not None
+        else None
+    )
+
+    video_filename = (
+        uploaded_video.name
+        if uploaded_video is not None
+        else None
+    )
 
     if "video_processing" not in st.session_state:
         st.session_state["video_processing"] = False
 
     if video_bytes is None:
-        # Prevent a stale processing flag from hiding the upload prompt.
         st.session_state["video_processing"] = False
-        st.info("📤 Please upload a video first. The Run button will appear after upload.")
+        st.info(
+            "📤 Please upload a video first. "
+            "The Run button will appear after upload."
+        )
+
     else:
         source_signature = hashlib.sha256(video_bytes).hexdigest()
 
-        # Clear old results when a different video is selected.
-        if st.session_state.get("source_signature") != source_signature:
+        # Reset results only if the user selects a different video.
+        if (
+            st.session_state.get("source_signature")
+            != source_signature
+        ):
             st.session_state["source_signature"] = source_signature
             st.session_state.pop("processed_video", None)
             st.session_state.pop("video_result", None)
             st.session_state.pop("video_advice", None)
             st.session_state.pop("processed_signature", None)
+            st.session_state["video_processing"] = False
 
         st.write(f"Selected video: **{video_filename}**")
 
         already_processed = (
-            st.session_state.get("processed_signature") == source_signature
+            st.session_state.get("processed_signature")
+            == source_signature
             and st.session_state.get("video_result") is not None
             and bool(st.session_state.get("processed_video"))
         )
 
-        # Show the Run button only if this exact video has not already completed.
-        if not st.session_state.get("video_processing", False) and not already_processed:
+        # ----------------------------------------------------
+        # BUTTONS: only show them when processing is not active
+        # ----------------------------------------------------
+
+        if (
+            not st.session_state["video_processing"]
+            and not already_processed
+        ):
             if st.button(
                 "▶ Run Drowsiness Detection",
                 type="primary",
@@ -1068,41 +1017,66 @@ else:
                 key="run-recorded-video",
             ):
                 st.session_state["video_processing"] = True
+
+                # This rerun starts processing on the next script run.
                 st.rerun()
 
-        elif already_processed and not st.session_state.get("video_processing", False):
-            st.success("✅ This video has already been processed. Results are shown below.")
+        elif (
+            already_processed
+            and not st.session_state["video_processing"]
+        ):
+            st.success(
+                "✅ This video has already been processed. "
+                "Results are shown below."
+            )
+
             if st.button(
                 "🔄 Process This Video Again",
                 use_container_width=True,
                 key="rerun-recorded-video",
             ):
                 st.session_state.pop("processed_signature", None)
+                st.session_state.pop("processed_video", None)
+                st.session_state.pop("video_result", None)
+                st.session_state.pop("video_advice", None)
+
                 st.session_state["video_processing"] = True
                 st.rerun()
 
-        else:
-            # The flag is set on the button click, then processing begins on rerun.
-            st.info("⏳ Video processing chal rahi hai. Please wait...")
-            progress = st.progress(0, text="Preparing video...")
+        # ----------------------------------------------------
+        # IMPORTANT FIX:
+        # Process only when the processing flag is True.
+        # This is NOT the button's "else" branch anymore.
+        # ----------------------------------------------------
 
-            # Remove previous results before starting a fresh run.
-            st.session_state.pop("processed_video", None)
-            st.session_state.pop("video_result", None)
-            st.session_state.pop("video_advice", None)
+        if st.session_state["video_processing"]:
+
+            progress = st.progress(
+                0,
+                text="Preparing video...",
+            )
+
+            st.info(
+                "⏳ Video processing chal rahi hai. Please wait..."
+            )
 
             try:
                 with tempfile.TemporaryDirectory() as temp_dir:
                     temp_dir = Path(temp_dir)
 
                     suffix = Path(video_filename).suffix or ".mp4"
+
                     input_path = temp_dir / f"input{suffix}"
                     raw_output_path = temp_dir / "annotated_raw.mp4"
-                    h264_output_path = temp_dir / "processed_driver_video.mp4"
+                    h264_output_path = (
+                        temp_dir / "processed_driver_video.mp4"
+                    )
 
                     input_path.write_bytes(video_bytes)
 
-                    with st.spinner("Processing the complete video..."):
+                    with st.spinner(
+                        "Processing the complete video..."
+                    ):
                         result = process_video(
                             input_path,
                             raw_output_path,
@@ -1110,7 +1084,9 @@ else:
                             progress,
                         )
 
-                    with st.spinner("Preparing playable video..."):
+                    with st.spinner(
+                        "Preparing playable video..."
+                    ):
                         convert_to_browser_mp4(
                             raw_output_path,
                             h264_output_path,
@@ -1119,27 +1095,47 @@ else:
                     processed_bytes = h264_output_path.read_bytes()
 
                 if not processed_bytes:
-                    raise RuntimeError("Processed video file is empty.")
+                    raise RuntimeError(
+                        "Processed video file is empty."
+                    )
 
+                # Save the completed result before displaying it.
                 st.session_state["processed_video"] = processed_bytes
                 st.session_state["video_result"] = result
                 st.session_state["video_advice"] = None
-                st.session_state["processed_signature"] = source_signature
-                st.success("Video processing complete!")
+                st.session_state["processed_signature"] = (
+                    source_signature
+                )
+
+                st.success("✅ Video processing complete!")
 
             except Exception as error:
-                st.error(f"Video processing failed: {type(error).__name__}: {error}")
+                st.error(
+                    f"Video processing failed: "
+                    f"{type(error).__name__}: {error}"
+                )
+
+                # Make the Run button available again after an error.
+                st.session_state.pop("processed_video", None)
+                st.session_state.pop("video_result", None)
+                st.session_state.pop("video_advice", None)
+                st.session_state.pop("processed_signature", None)
 
             finally:
-                # Allow another run after success or failure.
+                # Always reset the processing flag.
                 st.session_state["video_processing"] = False
 
-            # Rerun so the Run button returns and completed results are displayed.
-            # st.rerun() ---------------------------------------------------------------------------------------------------
+            # FIX: Do not call st.rerun() here.
+            # Continue below and show the result immediately.
 
-        # Display results only when the current uploaded video has been processed.
+        # ----------------------------------------------------
+        # DISPLAY RESULTS
+        # ----------------------------------------------------
+
         if (
             video_bytes is not None
+            and st.session_state.get("processed_signature")
+            == source_signature
             and st.session_state.get("video_result") is not None
             and st.session_state.get("processed_video")
         ):
@@ -1150,16 +1146,32 @@ else:
 
             c1, c2, c3, c4 = st.columns(4)
 
-            c1.metric("Frames processed", f"{result['frames']:,}")
-            c2.metric("Video duration", f"{result['duration']:.1f} s")
-            c3.metric("Possible alerts", result["alerts"])
-            c4.metric("Longest possible closure", f"{result['longest']:.1f} s")
+            c1.metric(
+                "Frames processed",
+                f"{result['frames']:,}",
+            )
+            c2.metric(
+                "Video duration",
+                f"{result['duration']:.1f} s",
+            )
+            c3.metric(
+                "Possible alerts",
+                result["alerts"],
+            )
+            c4.metric(
+                "Longest possible closure",
+                f"{result['longest']:.1f} s",
+            )
 
             video_column, advice_column = st.columns([1.4, 1])
 
             with video_column:
                 st.subheader("Processed Video")
-                st.video(processed_bytes, format="video/mp4")
+
+                st.video(
+                    processed_bytes,
+                    format="video/mp4",
+                )
 
                 st.download_button(
                     "⬇ Download processed video",
@@ -1178,6 +1190,7 @@ else:
                         "Possible eye-closure alerts detected. "
                         "Take a safe rest break if drowsiness is suspected."
                     )
+
                     st.audio(
                         make_alert_beep(),
                         format="audio/wav",
@@ -1189,7 +1202,9 @@ else:
                     use_container_width=True,
                     key="recorded-ai-advice-button",
                 ):
-                    with st.spinner("Preparing video safety advice..."):
+                    with st.spinner(
+                        "Preparing video safety advice..."
+                    ):
                         st.session_state["video_advice"] = get_ai_advice(
                             result["alerts"],
                             result["longest"],
@@ -1198,7 +1213,9 @@ else:
                         )
 
                 if st.session_state.get("video_advice"):
-                    st.info(st.session_state["video_advice"])
+                    st.info(
+                        st.session_state["video_advice"]
+                    )
                 else:
                     st.caption(
                         "Click Get AI Safety Advice to display a recommendation."
