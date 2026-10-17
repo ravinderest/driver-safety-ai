@@ -124,10 +124,29 @@ with st.sidebar:
 mode=st.radio("Choose detection mode",["Upload / recorded video","Live webcam"],horizontal=True)
 if mode=="Live webcam":
     st.subheader("📷 Live Webcam Drowsiness Detection")
-    st.write("Click START and allow camera access when your browser asks. Use only while parked, never while driving.")
-    ctx=webrtc_streamer(key="driver-safety-live",mode=WebRtcMode.SENDRECV,
+    # st.write("Click START and allow camera access when your browser asks. Use only while parked, never while driving.")
+    # ctx=webrtc_streamer(key="driver-safety-live",mode=WebRtcMode.SENDRECV,
+    #     video_processor_factory=LiveProcessor,
+    #     media_stream_constraints={"video":True,"audio":False},async_processing=True)
+    
+    ctx = webrtc_streamer(
+        key="driver-safety-live",
+        mode=WebRtcMode.SENDRECV,
         video_processor_factory=LiveProcessor,
-        media_stream_constraints={"video":True,"audio":False},async_processing=True)
+        media_stream_constraints={
+            "video": True,
+            "audio": False
+        },
+        rtc_configuration={
+            "iceServers": [
+                {
+                    "urls": ["stun:stun.l.google.com:19302"]
+                }
+            ]
+        },
+        async_processing=True
+    )
+
     if ctx.video_processor:
         p=ctx.video_processor; p.alert_after=alert_after
         st_autorefresh(interval=1000,key="live-refresh")

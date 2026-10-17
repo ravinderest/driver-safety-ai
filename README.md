@@ -134,3 +134,7 @@ Only include features and performance results that have actually been tested and
 
 This is an experimental prototype intended for learning, demonstration, and further development in AI-assisted driver safety.
 
+## Live Project Link
+```bash
+https://driver-safety-ai-5cg2a7ebssx2etsejup3hi.streamlit.app/
+```
