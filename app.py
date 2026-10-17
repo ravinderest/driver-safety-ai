@@ -618,7 +618,21 @@ def process_video(input_path, raw_output_path, alert_after, progress):
 
             writer.write(frame)
 
-            if total_frames > 0 and frames_processed % 5 == 0:
+            # if total_frames > 0 and frames_processed % 5 == 0:
+            #     percent = min(
+            #         int(frames_processed * 100 / total_frames),
+            #         100,
+            #     )
+            #     progress.progress(
+            #         percent,
+            #         text=f"Processing video: {percent}%",
+            #     )
+
+            if (
+                progress is not None
+                and total_frames > 0
+                and frames_processed % 5 == 0
+                ):
                 percent = min(
                     int(frames_processed * 100 / total_frames),
                     100,
@@ -628,14 +642,16 @@ def process_video(input_path, raw_output_path, alert_after, progress):
                     text=f"Processing video: {percent}%",
                 )
 
+
         if frames_processed == 0:
             raise RuntimeError("No readable frames were found.")
 
-        progress.progress(
-            100,
-            text="Detection complete. Preparing playable video...",
-        )
-
+        if progress is not None:
+            progress.progress(
+                100,
+                text="Detection complete. Preparing playable video...",
+            )
+            
         return {
             "frames": frames_processed,
             "fps": fps,
@@ -728,6 +744,37 @@ def convert_to_browser_mp4(raw_path, final_path):
         "FFmpeg could not encode H.264. Install a full FFmpeg build "
         "with a libx264 or libopenh264 encoder, then try again."
     )
+    
+@st.cache_data(show_spinner=False, max_entries=2)
+def process_uploaded_video_cached(video_bytes, video_filename, alert_after):
+    """Cache the completed result for the same uploaded video and threshold."""
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir = Path(temp_dir)
+
+        suffix = Path(video_filename).suffix or ".mp4"
+        input_path = temp_dir / f"input{suffix}"
+        raw_output_path = temp_dir / "annotated_raw.mp4"
+        final_output_path = temp_dir / "processed_driver_video.mp4"
+
+        input_path.write_bytes(video_bytes)
+
+        # Process without a Streamlit progress widget inside the cached function.
+        result = process_video(
+            input_path,
+            raw_output_path,
+            alert_after,
+            progress=None,
+        )
+
+        convert_to_browser_mp4(raw_output_path, final_output_path)
+
+        processed_bytes = final_output_path.read_bytes()
+
+        if not processed_bytes:
+            raise RuntimeError("Processed video file is empty.")
+
+        return processed_bytes, result
 
 
 # ============================================================
@@ -1088,7 +1135,7 @@ else:
                 st.session_state["video_processing"] = False
 
             # Rerun so the Run button returns and completed results are displayed.
-            st.rerun()
+            # st.rerun() ---------------------------------------------------------------------------------------------------
 
         # Display results only when the current uploaded video has been processed.
         if (
