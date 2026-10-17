@@ -137,13 +137,26 @@ if mode=="Live webcam":
             "video": True,
             "audio": False
         },
+        # rtc_configuration={
+        #     "iceServers": [
+        #         {
+        #             "urls": ["stun:stun.l.google.com:19302"]
+        #         }
+        #     ]
+        # },
+
         rtc_configuration={
             "iceServers": [
                 {
                     "urls": ["stun:stun.l.google.com:19302"]
-                }
-            ]
-        },
+                    },
+                    {
+                        "urls": [st.secrets["TURN_URL"]],
+                        "username": st.secrets["TURN_USERNAME"],
+                        "credential": st.secrets["TURN_PASSWORD"],
+                    },
+                    ]
+                },
         async_processing=True
     )
 
