@@ -6,8 +6,7 @@
 **Try the deployed application:**
 ```bash
 https://driver-safety-ai-5cg2a7ebssx2etsejup3hi.streamlit.app/
-```
-👉 
+``` 
 
 ## Overview
 
