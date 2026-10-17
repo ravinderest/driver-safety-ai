@@ -146,10 +146,10 @@ if mode=="Live webcam":
         else:
             st.success("No prolonged possible eye-closure alert yet.")
 
-        if st.button("🧠 Get AI safety advice for this live session"):
-            with st.spinner("Contacting Nebius Token Factory…"):
-                st.session_state["live_advice"]=nemotron_advice(alerts,longest,elapsed,"live webcam")
-        if "live_advice" in st.session_state: st.info(st.session_state["live_advice"])
+        # if st.button("🧠 Get AI safety advice for this live session"):
+        #     with st.spinner("Contacting Nebius Token Factory…"):
+        #         st.session_state["live_advice"]=nemotron_advice(alerts,longest,elapsed,"live webcam")
+        # if "live_advice" in st.session_state: st.info(st.session_state["live_advice"])
         st.caption("No video is saved by this live mode. Detection can be affected by lighting, glasses, head turns, and camera position.")
     else: st.info("Click START in the camera panel to begin live detection.")
 else:
