@@ -67,12 +67,30 @@ def get_api_key():
         return None
 
 
-def get_ai_advice(alerts, longest, duration, source):
-    """Ask Nemotron for advice; return fallback advice on failure."""
+def get_ai_advice(
+    alerts,
+    longest,
+    duration,
+    source,
+    previous_advice=None,
+    alert_number=None,
+):
+    """Ask Nemotron for a fresh recommendation; return useful advice on failure."""
 
     api_key = get_api_key()
 
     if not api_key:
+        # Rotate practical fallback messages so every new alert can show a
+        # different recommendation even when the AI service is unavailable.
+        fallback_messages = [
+            "Pull over at the next safe location, park, and take a rest before continuing.",
+            "Do not try to push through tiredness. Stop somewhere safe, hydrate, and rest.",
+            "When safe, park the vehicle and take a short nap or arrange another driver.",
+            "Avoid continuing if you feel sleepy. Find a safe stopping place and rest first.",
+            "Please pause the journey at a safe location, get some fresh air, and rest before driving again.",
+        ]
+        if alert_number is not None:
+            return fallback_messages[(int(alert_number) - 1) % len(fallback_messages)]
         return FALLBACK_ADVICE
 
     try:
@@ -94,7 +112,9 @@ def get_ai_advice(alerts, longest, duration, source):
                         "Do not diagnose medical conditions. If drowsiness "
                         "is suspected, recommend stopping at a safe location "
                         "and resting. Eye detection alone cannot prove that "
-                        "a driver is drowsy."
+                        "a driver is drowsy. Each alert must receive a fresh "
+                        "message with wording and a practical focus different "
+                        "from the previous recommendation when possible."
                     ),
                 },
                 {
@@ -104,7 +124,12 @@ def get_ai_advice(alerts, longest, duration, source):
                         f"Possible alert episodes: {alerts}. "
                         f"Longest possible eye closure: {longest:.1f} seconds. "
                         f"Observed duration: {duration:.1f} seconds. "
-                        "Provide one actionable safety recommendation."
+                        f"Alert number in this session: {alert_number if alert_number is not None else alerts}. "
+                        f"Previous recommendation: {previous_advice or 'None provided'}. "
+                        "Generate a new recommendation for this alert. Do not copy "
+                        "or paraphrase the previous recommendation; choose a distinct "
+                        "practical safety action while always prioritizing stopping "
+                        "in a safe place and resting if drowsiness is suspected."
                     ),
                 },
             ],
@@ -117,12 +142,19 @@ def get_ai_advice(alerts, longest, duration, source):
         if advice and advice.strip():
             return advice.strip()
 
-    except Exception as error:
-        # Log a user-friendly message; still return useful advice.
-        st.warning(
-            f"AI service unavailable ({type(error).__name__}). "
-            "Showing general safety advice."
-        )
+    except Exception:
+        # This helper may run in a background thread. Never call Streamlit UI
+        # functions here; return useful advice even when the API is unavailable.
+        if alert_number is not None:
+            fallback_messages = [
+                "Pull over at the next safe location, park, and take a rest before continuing.",
+                "Do not try to push through tiredness. Stop somewhere safe, hydrate, and rest.",
+                "When safe, park the vehicle and take a short nap or arrange another driver.",
+                "Avoid continuing if you feel sleepy. Find a safe stopping place and rest first.",
+                "Please pause the journey at a safe location, get some fresh air, and rest before driving again.",
+            ]
+            return fallback_messages[(int(alert_number) - 1) % len(fallback_messages)]
+        return FALLBACK_ADVICE
 
     return FALLBACK_ADVICE
 
@@ -244,10 +276,24 @@ class LiveMetrics:
         self.closed_since = None
         self.alert_active = False
         self.face_seen = False
+        self.events = []
 
     def set_alert_threshold(self, seconds):
         with self.lock:
             self.alert_after = seconds
+
+    def reset(self):
+        """Clear all metrics when a new webcam session starts."""
+        with self.lock:
+            self.started = None
+            self.last_frame_at = None
+            self.frames = 0
+            self.alerts = 0
+            self.longest = 0.0
+            self.closed_since = None
+            self.alert_active = False
+            self.face_seen = False
+            self.events = []
 
     def process_frame(self, frame):
         """Process a webcam frame and return the annotated frame."""
@@ -287,6 +333,18 @@ class LiveMetrics:
                 ):
                     self.alerts += 1
                     self.alert_active = True
+                    self.events.append(
+                        {
+                            "Alert #": self.alerts,
+                            "Time in session (s)": round(
+                                now - self.started, 2
+                            ),
+                            "Possible eye closure (s)": round(
+                                closure_seconds, 2
+                            ),
+                            "Note": "Possible eye-closure event; not a diagnosis",
+                        }
+                    )
 
             else:
                 self.closed_since = None
@@ -333,6 +391,7 @@ class LiveMetrics:
             started = self.started
             last_frame_at = self.last_frame_at
             face_seen = self.face_seen
+            events = [dict(event) for event in self.events]
 
         duration = 0.0
 
@@ -349,7 +408,90 @@ class LiveMetrics:
             "longest": longest,
             "duration": max(0.0, duration),
             "face_seen": face_seen,
+            "events": events,
         }
+
+
+class LiveAdviceManager:
+    """Generate advice in a background thread so UI refreshes cannot cancel it."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.active = True
+        self.requested_alerts = 0
+        self.completed_alerts = 0
+        self.advice = None
+        self.generating = False
+        self.worker = None
+
+    def reset(self):
+        with self.lock:
+            self.active = True
+            self.requested_alerts = 0
+            self.completed_alerts = 0
+            self.advice = None
+            self.generating = False
+            self.worker = None
+
+    def stop(self):
+        # Any in-flight result is ignored after STOP.
+        with self.lock:
+            self.active = False
+
+    def request(self, alert_count, longest, duration):
+        with self.lock:
+            if not self.active:
+                return
+            self.requested_alerts = max(self.requested_alerts, int(alert_count))
+            if self.worker is not None and self.worker.is_alive():
+                return
+            if self.completed_alerts >= self.requested_alerts:
+                return
+            self.generating = True
+            self.worker = threading.Thread(
+                target=self._run,
+                args=(float(longest), float(duration)),
+                daemon=True,
+            )
+            self.worker.start()
+
+    def _run(self, longest, duration):
+        while True:
+            with self.lock:
+                if not self.active:
+                    self.generating = False
+                    return
+                if self.completed_alerts >= self.requested_alerts:
+                    self.generating = False
+                    return
+                alert_number = self.completed_alerts + 1
+                previous_advice = self.advice
+
+            advice = get_ai_advice(
+                alert_number,
+                longest,
+                duration,
+                "live webcam",
+                previous_advice=previous_advice,
+                alert_number=alert_number,
+            )
+
+            with self.lock:
+                # Do not publish an answer if the user stopped the camera
+                # while the API request was in flight.
+                if not self.active:
+                    self.generating = False
+                    return
+                self.advice = advice
+                self.completed_alerts = alert_number
+
+    def snapshot(self):
+        with self.lock:
+            return {
+                "advice": self.advice,
+                "completed_alerts": self.completed_alerts,
+                "generating": self.generating,
+            }
 
 
 # ============================================================
@@ -723,88 +865,110 @@ if mode == "Live webcam":
         async_processing=True,
     )
 
-    if webrtc_ctx.state.playing:
+    camera_is_playing = bool(webrtc_ctx.state.playing)
+
+    # Preserve the finished session's table/advice after STOP. When START is
+    # pressed again, clear the previous session so the new session starts fresh.
+    was_playing = st.session_state.get("live_camera_was_playing", False)
+    if "live_advice_manager" not in st.session_state:
+        st.session_state["live_advice_manager"] = LiveAdviceManager()
+    live_advice_manager = st.session_state["live_advice_manager"]
+
+    if camera_is_playing and not was_playing:
+        live_metrics.reset()
+        live_advice_manager = LiveAdviceManager()
+        st.session_state["live_advice_manager"] = live_advice_manager
+        st.session_state["live_notified_alert_count"] = 0
+    elif not camera_is_playing and was_playing:
+        live_advice_manager.stop()
+
+    st.session_state["live_camera_was_playing"] = camera_is_playing
+
+    if camera_is_playing:
         st_autorefresh(
             interval=1000,
             key="live-metrics-refresh",
         )
-
         st.success("Webcam session is running.")
     else:
         st.info(
-            "Click START in the webcam panel. If video does not appear, "
-            "check browser camera permission and connection status."
+            "Click START in the webcam panel. Advice is generated automatically "
+            "for alerts while the camera is running."
         )
 
-    # Always render metrics; do not hide them just because the
-    # processor object is briefly unavailable during a rerun.
     live_snapshot = live_metrics.snapshot()
 
     st.subheader("Live Metrics")
-
     col1, col2, col3, col4 = st.columns(4)
 
-    col1.metric(
-        "Frames processed",
-        f"{live_snapshot['frames']:,}",
-    )
-    col2.metric(
-        "Possible alert episodes",
-        live_snapshot["alerts"],
-    )
-    col3.metric(
-        "Longest possible closure",
-        f"{live_snapshot['longest']:.1f} s",
-    )
-    col4.metric(
-        "Observed session",
-        f"{live_snapshot['duration']:.1f} s",
+    col1.metric("Frames processed", f"{live_snapshot['frames']:,}")
+    col2.metric("Possible alert episodes", live_snapshot["alerts"])
+    col3.metric("Longest possible closure", f"{live_snapshot['longest']:.1f} s")
+    col4.metric("Observed session", f"{live_snapshot['duration']:.1f} s")
+
+    # Track alert notifications separately from advice generation.
+    if "live_notified_alert_count" not in st.session_state:
+        st.session_state["live_notified_alert_count"] = 0
+
+    new_alert = (
+        camera_is_playing
+        and live_snapshot["alerts"] > st.session_state["live_notified_alert_count"]
     )
 
     if live_snapshot["frames"] == 0:
         st.caption(
-            "Waiting for camera frames. If this remains at zero after "
-            "START, the webcam stream has not reached the Python callback."
+            "Waiting for camera frames. If this remains at zero after START, "
+            "check browser camera permission and webcam connection."
         )
     elif live_snapshot["alerts"] > 0:
         st.warning(
-            "Possible eye-closure alerts have occurred. This is not "
-            "a definitive drowsiness diagnosis."
+            "⚠️ Possible eye-closure alert detected. If you are driving, "
+            "stop at a safe place before resting. This is not a medical diagnosis."
         )
     else:
         st.success("No prolonged possible eye-closure alerts detected yet.")
 
-    # IMPORTANT: This button is outside the processor-available condition.
-    # The advice will remain displayed through subsequent Streamlit reruns.
-    if st.button(
-        "🧠 Get AI Safety Advice",
-        type="primary",
-        use_container_width=True,
-        key="live-ai-advice-button",
-    ):
-        snapshot = live_metrics.snapshot()
+    if new_alert:
+        st.session_state["live_notified_alert_count"] = live_snapshot["alerts"]
+        st.warning("🔔 DRIVER SAFETY ALERT — possible drowsiness/eye closure.")
+        st.audio(make_alert_beep(), format="audio/wav", autoplay=True)
 
-        with st.spinner("Preparing safety advice..."):
-            if snapshot["frames"] == 0:
-                st.session_state["live_advice"] = FALLBACK_ADVICE
-            else:
-                st.session_state["live_advice"] = get_ai_advice(
-                    snapshot["alerts"],
-                    snapshot["longest"],
-                    snapshot["duration"],
-                    "live webcam",
-                )
+    # Request advice without blocking Streamlit's refresh loop. This avoids a
+    # one-second autorefresh interrupting a slower AI API response.
+    if camera_is_playing and live_snapshot["alerts"] > 0:
+        live_advice_manager.request(
+            live_snapshot["alerts"],
+            live_snapshot["longest"],
+            live_snapshot["duration"],
+        )
 
-    # Display outside the button condition so it survives reruns.
-    if st.session_state.get("live_advice"):
+    advice_state = live_advice_manager.snapshot()
+    if advice_state["generating"]:
+        st.info(
+            f"Alert advice is being prepared "
+            f"({advice_state['completed_alerts']}/{live_snapshot['alerts']} complete)…"
+        )
+    if advice_state["advice"]:
         st.subheader("AI Safety Advice")
-        st.info(st.session_state["live_advice"])
+        st.info(advice_state["advice"])
+
+    # Show the alert log after the webcam has stopped, as requested.
+    if not camera_is_playing and live_snapshot["frames"] > 0:
+        st.subheader("📋 Live Webcam Alert Log")
+        if live_snapshot["events"]:
+            st.dataframe(
+                live_snapshot["events"],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.success("No possible eye-closure alert events were recorded.")
 
     st.caption(
-        "If the webcam is being used remotely, HTTPS and working "
-        "STUN/TURN connectivity may be required."
+        "Audio autoplay depends on browser permissions/settings. Visual warnings "
+        "and the alert table remain available if the browser blocks sound. "
+        "This demo is not a certified safety device."
     )
-
 
 # ============================================================
 # UPLOAD / RECORDED VIDEO
