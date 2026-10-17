@@ -1,4 +1,6 @@
-# Driver Safety AI 🚘
+from pathlib import Path
+
+content = """# Driver Safety AI 🚘
 
 **An AI-assisted driver-monitoring system designed to identify possible signs of driver drowsiness and provide safety alerts using OpenCV, Streamlit, and NVIDIA Nemotron.**
 
@@ -137,4 +139,7 @@ Only include features and performance results that have actually been tested and
 ## Project Status
 
 This is an experimental prototype intended for learning, demonstration, and further development in AI-assisted driver safety.
-
+"""
+path = Path("/mnt/data/README.md")
+path.write_text(content, encoding="utf-8")
+print(f"Created: {path}\nSize: {path.stat().st_size} bytes")
