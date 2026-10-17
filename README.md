@@ -47,7 +47,7 @@ The application also provides monitoring metrics and can generate practical driv
 Make sure Python is installed, then open a terminal in the project folder and run:
 
 ```bash
-python -m pip install -r requirements_live.txt
+python -m pip install -r requirements.txt
 ```
 
 ### 2. Configure the API Key
@@ -69,7 +69,7 @@ The core detection functionality can operate without the AI recommendation featu
 Start the Streamlit dashboard:
 
 ```bash
-python -m streamlit run app_live.py
+python -m streamlit run app.py
 ```
 
 Open the local URL displayed in the terminal. Allow webcam access when prompted if you want to use live monitoring.
