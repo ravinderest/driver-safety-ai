@@ -1057,7 +1057,7 @@ else:
             )
 
             st.info(
-                "⏳ Video processing chal rahi hai. Please wait..."
+                "⏳ Video processing. Please wait..."
             )
 
             try:
