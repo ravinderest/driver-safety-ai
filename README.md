@@ -2,8 +2,8 @@
 
 **An AI-assisted driver-monitoring system designed to identify possible signs of driver drowsiness and provide safety alerts using OpenCV, Streamlit, and NVIDIA Nemotron.**
 
-🔗 Live Demo
-Try the deployed application:
+🔗 ##Live Demo
+**Try the deployed application:
 👉 https://driver-safety-ai-5cg2a7ebssx2etsejup3hi.streamlit.app/
 
 ## Overview
