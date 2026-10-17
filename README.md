@@ -4,7 +4,10 @@
 
 ## 🔗 Live Demo
 **Try the deployed application:**
-👉 https://driver-safety-ai-5cg2a7ebssx2etsejup3hi.streamlit.app/
+```bash
+https://driver-safety-ai-5cg2a7ebssx2etsejup3hi.streamlit.app/
+```
+👉 
 
 ## Overview
 
